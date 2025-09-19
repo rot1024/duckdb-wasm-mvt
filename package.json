@@ -1,0 +1,21 @@
+{
+  "name": "duckdb-wasm-mvt",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3",
+    "vite": "^7.1.6"
+  },
+  "dependencies": {
+    "@duckdb/duckdb-wasm": "^1.30.0",
+    "@types/maplibre-gl": "^1.13.2",
+    "maplibre-gl": "^5.7.2"
+  }
+}
