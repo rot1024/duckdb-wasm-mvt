@@ -1,7 +1,7 @@
 import './style.css'
 import { initializeDuckDB, executeSql } from './duckdb'
 import { initializeMap, getMap } from './map'
-import { initializeDuckDBProtocol } from './duckdb-protocol'
+import { initializeDuckDBProtocol, setMVTMethod } from './duckdb-protocol'
 import {
   addDuckDBLayer,
   detectGeometryColumns,
@@ -36,13 +36,33 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       </div>
       <div style="display: flex; gap: 10px;">
         <button id="load-btn" type="button" style="flex: 1;" disabled>Load Data</button>
-        <button id="load-sample-btn" type="button" style="flex: 1;" disabled>Load Sample Points</button>
+        <button id="load-sample-btn" type="button" style="flex: 1;" disabled>Load Sample Data</button>
       </div>
     </div>
 
     <div class="card" id="map-layers" style="display: none;">
       <h3>Map Layers</h3>
       <div id="layer-list"></div>
+    </div>
+
+    <div class="card">
+      <h3>MVT Generation Method</h3>
+      <div style="margin: 10px 0;">
+        <label style="display: flex; align-items: center; margin-bottom: 8px; cursor: pointer;">
+          <input type="radio" name="mvt-method" id="mvt-native" checked style="margin-right: 8px;">
+          <div>
+            <strong>Native ST_AsMVT</strong>
+            <div style="font-size: 12px; color: #888;">Generate MVT directly in DuckDB</div>
+          </div>
+        </label>
+        <label style="display: flex; align-items: center; cursor: pointer;">
+          <input type="radio" name="mvt-method" id="mvt-geojson" style="margin-right: 8px;">
+          <div>
+            <strong>GeoJSON + geojson-vt</strong>
+            <div style="font-size: 12px; color: #888;">Fetch GeoJSON, convert client-side</div>
+          </div>
+        </label>
+      </div>
     </div>
 
     <div class="card" id="performance-stats" style="display: none;">
@@ -153,6 +173,56 @@ function updateLayerList() {
       })
     }
 
+    // Set up MVT method toggle with automatic map refresh
+    const mvtGeoJsonRadio = document.getElementById('mvt-geojson') as HTMLInputElement
+    const mvtNativeRadio = document.getElementById('mvt-native') as HTMLInputElement
+
+    const refreshMapLayers = () => {
+      const map = getMap()
+      if (map) {
+        const layers = getActiveLayers()
+
+        // Store current layer configurations
+        const layerConfigs = layers.map(layer => ({
+          tableName: layer.tableName,
+          geometryColumn: layer.geometryColumn,
+          propertyColumns: layer.propertyColumns
+        }))
+
+        // Remove all layers
+        layers.forEach(layer => {
+          removeDuckDBLayer(map, layer.id)
+        })
+
+        // Re-add all layers with new MVT method
+        layerConfigs.forEach(async config => {
+          await addDuckDBLayer(map, config.tableName, config.geometryColumn, config.propertyColumns)
+        })
+
+        // Update layer list UI
+        updateLayerList()
+
+        console.log('Map layers refreshed with new MVT generation method')
+      }
+
+      // Clear performance metrics for fresh comparison
+      performanceTracker.clear()
+    }
+
+    mvtGeoJsonRadio?.addEventListener('change', () => {
+      if (mvtGeoJsonRadio.checked) {
+        setMVTMethod(false)
+        refreshMapLayers()
+      }
+    })
+
+    mvtNativeRadio?.addEventListener('change', () => {
+      if (mvtNativeRadio.checked) {
+        setMVTMethod(true)
+        refreshMapLayers()
+      }
+    })
+
   } catch (error) {
     console.error('❌ Error initializing:', error)
     alert('Failed to initialize application. Please check console for details.')
@@ -253,7 +323,7 @@ loadSampleBtn.addEventListener('click', async () => {
     console.log('Creating sample spatial data...')
 
     // Create sample points table
-    const sampleQuery = `
+    const pointsQuery = `
       CREATE OR REPLACE TABLE sample_points AS
       SELECT
         id,
@@ -275,29 +345,121 @@ loadSampleBtn.addEventListener('click', async () => {
       ) AS t(id, name, lng, lat, population)
     `
 
-    await executeSql(sampleQuery)
+    // Create sample polygons table (prefectures/regions)
+    const polygonsQuery = `
+      CREATE OR REPLACE TABLE sample_polygons AS
+      SELECT
+        id,
+        name,
+        ST_GeomFromText(wkt) as geometry,
+        area_type,
+        population_density
+      FROM (
+        VALUES
+          (1, 'Tokyo Metropolitan Area',
+           'POLYGON((139.5 35.5, 139.5 35.8, 139.9 35.8, 139.9 35.5, 139.5 35.5))',
+           'metropolitan', 6400),
+          (2, 'Osaka Metropolitan Area',
+           'POLYGON((135.3 34.5, 135.3 34.8, 135.7 34.8, 135.7 34.5, 135.3 34.5))',
+           'metropolitan', 4640),
+          (3, 'Nagoya Metropolitan Area',
+           'POLYGON((136.7 35.0, 136.7 35.3, 137.1 35.3, 137.1 35.0, 136.7 35.0))',
+           'metropolitan', 1450),
+          (4, 'Kanto Plain',
+           'POLYGON((139.2 35.4, 139.2 36.0, 140.2 36.0, 140.2 35.4, 139.2 35.4))',
+           'region', 1200),
+          (5, 'Kansai Region',
+           'POLYGON((134.8 34.3, 134.8 35.2, 136.0 35.2, 136.0 34.3, 134.8 34.3))',
+           'region', 890),
+          (6, 'Hokkaido North',
+           'POLYGON((141.0 43.0, 141.0 43.5, 142.0 43.5, 142.0 43.0, 141.0 43.0))',
+           'rural', 68),
+          (7, 'Kyushu Central',
+           'POLYGON((130.0 33.3, 130.0 34.0, 131.0 34.0, 131.0 33.3, 130.0 33.3))',
+           'rural', 340)
+      ) AS t(id, name, wkt, area_type, population_density)
+    `
 
+    // Create sample lines table (railways/roads)
+    const linesQuery = `
+      CREATE OR REPLACE TABLE sample_lines AS
+      SELECT
+        id,
+        name,
+        ST_GeomFromText(wkt) as geometry,
+        line_type,
+        length_km
+      FROM (
+        VALUES
+          (1, 'Tokaido Shinkansen',
+           'LINESTRING(139.6917 35.6895, 139.6380 35.4437, 136.9066 35.1815, 135.7681 35.0116, 135.5022 34.6937)',
+           'railway', 515),
+          (2, 'Tohoku Expressway',
+           'LINESTRING(139.6917 35.6895, 139.6566 35.8617, 139.7 36.0, 140.0 36.5, 141.3545 43.0642)',
+           'highway', 680),
+          (3, 'Osaka Loop Line',
+           'LINESTRING(135.5022 34.6937, 135.52 34.71, 135.53 34.70, 135.51 34.68, 135.5022 34.6937)',
+           'railway', 21),
+          (4, 'Kyushu Expressway',
+           'LINESTRING(130.4017 33.5904, 130.5 33.7, 130.7 33.9, 131.0 34.1)',
+           'highway', 120)
+      ) AS t(id, name, wkt, line_type, length_km)
+    `
+
+    // Execute all queries
+    await executeSql(pointsQuery)
     console.log('✅ Sample points table created!')
 
-    // Show sample data
-    const results = await executeSql('SELECT id, name, ST_AsText(geometry) as geom_wkt, population FROM sample_points ORDER BY population DESC')
-    console.log('Sample data:', results)
+    await executeSql(polygonsQuery)
+    console.log('✅ Sample polygons table created!')
 
-    // Auto-visualize sample points
+    await executeSql(linesQuery)
+    console.log('✅ Sample lines table created!')
+
+    // Show sample data
+    const pointResults = await executeSql('SELECT COUNT(*) as count FROM sample_points')
+    const polygonResults = await executeSql('SELECT COUNT(*) as count FROM sample_polygons')
+    const lineResults = await executeSql('SELECT COUNT(*) as count FROM sample_lines')
+
+    console.log('Sample data created:', {
+      points: pointResults[0].count,
+      polygons: polygonResults[0].count,
+      lines: lineResults[0].count
+    })
+
+    // Auto-visualize all sample layers
     const map = getMap()
     if (map) {
-      console.log('🗺️ Auto-visualizing sample points...')
+      console.log('🗺️ Auto-visualizing sample data...')
 
-      const allColumns = await getTableColumns('sample_points')
-      const geomColumns = ['geometry']
-      const propertyColumns = allColumns.filter(col => !geomColumns.includes(col))
-
-      const layerId = await addDuckDBLayer(map, 'sample_points', 'geometry', propertyColumns)
-
-      if (layerId) {
-        console.log('✅ Sample points automatically added to map!')
-        updateLayerList()
+      // Add polygons first (so they appear below other features)
+      const polygonColumns = await getTableColumns('sample_polygons')
+      const polygonProps = polygonColumns.filter(col => col !== 'geometry')
+      const polygonLayerId = await addDuckDBLayer(map, 'sample_polygons', 'geometry', polygonProps)
+      if (polygonLayerId) {
+        console.log('✅ Sample polygons added to map!')
       }
+
+      // Add lines
+      const lineColumns = await getTableColumns('sample_lines')
+      const lineProps = lineColumns.filter(col => col !== 'geometry')
+      const lineLayerId = await addDuckDBLayer(map, 'sample_lines', 'geometry', lineProps)
+      if (lineLayerId) {
+        console.log('✅ Sample lines added to map!')
+      }
+
+      // Add points last (so they appear on top)
+      const pointColumns = await getTableColumns('sample_points')
+      const pointProps = pointColumns.filter(col => col !== 'geometry')
+      const pointLayerId = await addDuckDBLayer(map, 'sample_points', 'geometry', pointProps)
+      if (pointLayerId) {
+        console.log('✅ Sample points added to map!')
+      }
+
+      updateLayerList()
+
+      // Fit map to show all of Japan
+      map.fitBounds([[129, 33], [143, 44]], { padding: 50 })
     }
 
   } catch (error) {

@@ -77,10 +77,12 @@ class PerformanceTracker {
     const detailsHtml = recentMetrics
       .map(m => {
         const time = new Date(m.timestamp).toLocaleTimeString();
+        const method = m.tileId.startsWith('[Native]') ? '🔵 Native' : '🟢 GeoJSON';
+        const cleanTileId = m.tileId.replace(/^\[(Native|GeoJSON)\]\s*/, '');
         return `<div style="margin-bottom: 5px; padding: 5px; background: rgba(255,255,255,0.05); border-radius: 3px;">
-          <div><strong>${m.tileId}</strong> @ ${time}</div>
+          <div><strong>${method} ${cleanTileId}</strong> @ ${time}</div>
           <div>Total: ${m.totalTime.toFixed(2)}ms | Fetch: ${m.fetchTime.toFixed(2)}ms | Convert: ${m.convertTime.toFixed(2)}ms</div>
-          <div>Features: ${m.features} | Size: ${(m.tileSize / 1024).toFixed(2)}KB</div>
+          <div>${m.features >= 0 ? `Features: ${m.features} | ` : ''}Size: ${(m.tileSize / 1024).toFixed(2)}KB</div>
         </div>`;
       })
       .join('');
