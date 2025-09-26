@@ -162,6 +162,9 @@ export async function addDuckDBLayer(
       visible: true
     });
 
+    // Add click handler for popups
+    setupFeatureInteraction(map, layerId, layerType);
+
     // Zoom to layer bounds
     try {
       const boundsResult = await executeSql(`
@@ -199,6 +202,13 @@ export async function addDuckDBLayer(
 export function removeDuckDBLayer(map: maplibregl.Map, layerId: string): void {
   const layerInfo = activeLayers.get(layerId);
   if (!layerInfo) return;
+
+  // Remove popup if exists
+  const popup = layerPopups.get(layerId);
+  if (popup) {
+    popup.remove();
+    layerPopups.delete(layerId);
+  }
 
   // Remove all related map layers
   const mapLayers = [`${layerId}-fill`, `${layerId}-outline`, `${layerId}-line`, `${layerId}-circle`];
@@ -246,3 +256,93 @@ export function toggleLayerVisibility(map: maplibregl.Map, layerId: string): voi
 export function getActiveLayers(): LayerInfo[] {
   return Array.from(activeLayers.values());
 }
+
+/**
+ * Setup feature interaction (click for popup, hover for cursor)
+ */
+function setupFeatureInteraction(
+  map: maplibregl.Map,
+  layerId: string,
+  layerType: 'fill' | 'line' | 'circle'
+): void {
+  // Determine the actual layer ID based on type
+  const interactiveLayerId = layerType === 'fill' ? `${layerId}-fill` :
+                             layerType === 'line' ? `${layerId}-line` :
+                             `${layerId}-circle`;
+
+  // Create popup instance
+  const popup = new maplibregl.Popup({
+    closeButton: true,
+    closeOnClick: true,  // Close on map click
+    maxWidth: '400px'
+  });
+
+  // Add click event for popup
+  map.on('click', interactiveLayerId, (e) => {
+    if (!e.features || e.features.length === 0) return;
+
+    const feature = e.features[0];
+    const coordinates = e.lngLat;
+
+    // For polygon/line features, ensure popup appears at click location
+    if (layerType === 'fill' || layerType === 'line') {
+      // Use click coordinates directly
+    } else if (feature.geometry.type === 'Point') {
+      // For points, use the feature's coordinates
+      const point = feature.geometry as any;
+      if (point.coordinates) {
+        coordinates.lng = point.coordinates[0];
+        coordinates.lat = point.coordinates[1];
+      }
+    }
+
+    // Build popup content with explicit text color and scrollable container
+    const properties = feature.properties || {};
+    let popupContent = '<div style="max-height: 400px; overflow-y: auto; padding: 5px; color: #333;">';
+
+    if (Object.keys(properties).length === 0) {
+      popupContent += '<p style="margin: 0; color: #666;">No properties</p>';
+    } else {
+      popupContent += '<table style="width: 100%; border-collapse: collapse;">';
+      for (const [key, value] of Object.entries(properties)) {
+        // Format the value (handle objects/arrays)
+        let displayValue = value;
+        if (typeof value === 'object' && value !== null) {
+          displayValue = JSON.stringify(value, null, 2);
+        }
+        popupContent += `
+          <tr>
+            <td style="padding: 4px; border-bottom: 1px solid #eee; font-weight: bold; vertical-align: top; color: #000; min-width: 80px;">${key}</td>
+            <td style="padding: 4px; border-bottom: 1px solid #eee; word-break: break-word; color: #333;">
+              ${typeof value === 'object' ?
+                `<pre style="margin: 0; white-space: pre-wrap; color: #333; max-width: 250px; overflow-x: auto;">${displayValue}</pre>` :
+                displayValue}
+            </td>
+          </tr>
+        `;
+      }
+      popupContent += '</table>';
+    }
+    popupContent += '</div>';
+
+    // Set popup content and display
+    popup.setLngLat(coordinates)
+         .setHTML(popupContent)
+         .addTo(map);
+  });
+
+  // Change cursor on hover
+  map.on('mouseenter', interactiveLayerId, () => {
+    map.getCanvas().style.cursor = 'pointer';
+  });
+
+  map.on('mouseleave', interactiveLayerId, () => {
+    map.getCanvas().style.cursor = '';
+  });
+
+  // Store popup reference for cleanup
+  layerPopups.set(layerId, popup);
+}
+
+// Store popups for cleanup when removing layers
+const layerPopups = new Map<string, maplibregl.Popup>();
