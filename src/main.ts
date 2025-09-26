@@ -56,8 +56,6 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div id="perf-details" style="max-height: 200px; overflow-y: auto; font-size: 12px; font-family: monospace;"></div>
       <button id="clear-perf-btn" type="button" style="margin-top: 10px; padding: 4px 8px; font-size: 12px;">Clear Metrics</button>
     </div>
-
-    <div id="output" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc; min-height: 100px; white-space: pre-wrap; font-family: monospace; overflow-x: auto;"></div>
   </div>
 
   <div class="map-container">
@@ -69,56 +67,10 @@ const urlInput = document.querySelector<HTMLInputElement>('#url-input')!
 const tableNameInput = document.querySelector<HTMLInputElement>('#table-name')!
 const loadBtn = document.querySelector<HTMLButtonElement>('#load-btn')!
 const loadSampleBtn = document.querySelector<HTMLButtonElement>('#load-sample-btn')!
-const output = document.querySelector<HTMLDivElement>('#output')!
 const mapLayersCard = document.querySelector<HTMLDivElement>('#map-layers')!
 const layerList = document.querySelector<HTMLDivElement>('#layer-list')!
 
 let loadedTables: string[] = []
-
-function log(message: string) {
-  output.textContent += message + '\n'
-  console.log(message)
-}
-
-function clearOutput() {
-  output.textContent = ''
-}
-
-function displayResults(results: any[]) {
-  if (results.length === 0) {
-    log('No results returned')
-    return
-  }
-
-  // Create a simple table display
-  const columns = Object.keys(results[0])
-  const maxWidths = columns.map(col =>
-    Math.max(col.length, ...results.map(row => String(row[col]).length))
-  )
-
-  // Header
-  const header = columns.map((col, i) => col.padEnd(maxWidths[i])).join(' | ')
-  const separator = maxWidths.map(w => '-'.repeat(w)).join('-+-')
-
-  log(header)
-  log(separator)
-
-  // Rows (limit display to 20 rows)
-  const displayRows = Math.min(results.length, 20)
-  for (let i = 0; i < displayRows; i++) {
-    const row = results[i]
-    const rowStr = columns.map((col, i) =>
-      String(row[col]).padEnd(maxWidths[i])
-    ).join(' | ')
-    log(rowStr)
-  }
-
-  if (results.length > displayRows) {
-    log(`... and ${results.length - displayRows} more rows`)
-  }
-
-  log(`\n${results.length} rows returned`)
-}
 
 function updateLayerList() {
   const layers = getActiveLayers()
@@ -167,22 +119,22 @@ function updateLayerList() {
 (async () => {
   try {
     // Initialize DuckDB
-    log('Initializing DuckDB-WASM...')
+    console.log('Initializing DuckDB-WASM...')
     const { connection } = await initializeDuckDB()
 
-    log('✅ DuckDB-WASM initialized successfully!')
+    console.log('✅ DuckDB-WASM initialized successfully!')
     const version = (await connection.query('SELECT version()')).toArray()[0].version
-    log(`Database version: ${version}`)
+    console.log(`Database version: ${version}`)
 
     // Load spatial extension
     try {
       await executeSql(`INSTALL spatial; LOAD spatial;`)
-      log('✅ Spatial extension loaded')
+      console.log('✅ Spatial extension loaded')
     } catch (error) {
-      log('❌ Could not load spatial extension')
+      console.error('❌ Could not load spatial extension', error)
     }
 
-    log('\nReady to load data!')
+    console.log('Ready to load data!')
 
     loadBtn.disabled = false
     loadSampleBtn.disabled = false
@@ -190,19 +142,20 @@ function updateLayerList() {
     // Initialize Map and protocol
     initializeMap()
     initializeDuckDBProtocol()
-    log('✅ Map and DuckDB protocol initialized!')
+    console.log('✅ Map and DuckDB protocol initialized!')
 
     // Set up performance metrics clear button
     const clearPerfBtn = document.getElementById('clear-perf-btn')
     if (clearPerfBtn) {
       clearPerfBtn.addEventListener('click', () => {
         performanceTracker.clear()
-        log('Performance metrics cleared')
+        console.log('Performance metrics cleared')
       })
     }
 
   } catch (error) {
-    log(`❌ Error initializing: ${error}`)
+    console.error('❌ Error initializing:', error)
+    alert('Failed to initialize application. Please check console for details.')
   }
 })()
 
@@ -216,9 +169,8 @@ loadBtn.addEventListener('click', async () => {
   }
 
   try {
-    clearOutput()
-    log(`Loading data from: ${url}`)
-    log(`Creating table: ${tableName}`)
+    console.log(`Loading data from: ${url}`)
+    console.log(`Creating table: ${tableName}`)
 
     // Determine file type from URL
     let query = ''
@@ -245,20 +197,19 @@ loadBtn.addEventListener('click', async () => {
     // Get column info
     const schemaResult = await executeSql(`DESCRIBE ${tableName}`)
 
-    log(`✅ Table '${tableName}' created successfully!`)
-    log(`Rows: ${rowCount}`)
-    log('\nSchema:')
-    displayResults(schemaResult)
+    console.log(`✅ Table '${tableName}' created successfully!`)
+    console.log(`Rows: ${rowCount}`)
+    console.log('Schema:', schemaResult)
 
     // Check for geometry columns and auto-visualize
     const geomColumns = await detectGeometryColumns(tableName)
     if (geomColumns.length > 0) {
-      log(`\n🗺️ Spatial data detected! Geometry columns: ${geomColumns.join(', ')}`)
+      console.log(`🗺️ Spatial data detected! Geometry columns: ${geomColumns.join(', ')}`)
 
       // Auto-visualize spatial data
       const map = getMap()
       if (map) {
-        log('Auto-visualizing spatial data...')
+        console.log('Auto-visualizing spatial data...')
 
         // Get all columns
         const allColumns = await getTableColumns(tableName)
@@ -269,10 +220,14 @@ loadBtn.addEventListener('click', async () => {
         const layerId = await addDuckDBLayer(map, tableName, geomColumn, propertyColumns)
 
         if (layerId) {
-          log(`✅ Layer automatically added to map: ${layerId}`)
+          console.log(`✅ Layer automatically added to map: ${layerId}`)
           updateLayerList()
         }
       }
+    } else {
+      // Show clear error message when no geometry column is detected
+      console.warn(`⚠️ No geometry columns found in table '${tableName}'`)
+      alert(`No spatial data detected in table '${tableName}'.\n\nThe table was loaded successfully but does not contain geometry columns that can be visualized on the map.\n\nTo visualize data on the map, ensure your data contains geometry columns (POINT, LINESTRING, POLYGON, etc.).`)
     }
 
     // Add to loaded tables list if not already there
@@ -281,7 +236,8 @@ loadBtn.addEventListener('click', async () => {
     }
 
   } catch (error) {
-    log(`❌ Error loading data: ${error}`)
+    console.error('❌ Error loading data:', error)
+    alert(`Failed to load data: ${error}`)
   }
 })
 
@@ -294,8 +250,7 @@ urlInput.addEventListener('keypress', (e) => {
 
 loadSampleBtn.addEventListener('click', async () => {
   try {
-    clearOutput()
-    log('Creating sample spatial data...')
+    console.log('Creating sample spatial data...')
 
     // Create sample points table
     const sampleQuery = `
@@ -322,17 +277,16 @@ loadSampleBtn.addEventListener('click', async () => {
 
     await executeSql(sampleQuery)
 
-    log('✅ Sample points table created!')
+    console.log('✅ Sample points table created!')
 
     // Show sample data
     const results = await executeSql('SELECT id, name, ST_AsText(geometry) as geom_wkt, population FROM sample_points ORDER BY population DESC')
-    log('\nSample data:')
-    displayResults(results)
+    console.log('Sample data:', results)
 
     // Auto-visualize sample points
     const map = getMap()
     if (map) {
-      log('\n🗺️ Auto-visualizing sample points...')
+      console.log('🗺️ Auto-visualizing sample points...')
 
       const allColumns = await getTableColumns('sample_points')
       const geomColumns = ['geometry']
@@ -341,12 +295,13 @@ loadSampleBtn.addEventListener('click', async () => {
       const layerId = await addDuckDBLayer(map, 'sample_points', 'geometry', propertyColumns)
 
       if (layerId) {
-        log(`✅ Sample points automatically added to map!`)
+        console.log('✅ Sample points automatically added to map!')
         updateLayerList()
       }
     }
 
   } catch (error) {
-    log(`❌ Error creating sample data: ${error}`)
+    console.error('❌ Error creating sample data:', error)
+    alert(`Failed to create sample data: ${error}`)
   }
 })
