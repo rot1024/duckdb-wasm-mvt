@@ -42,6 +42,14 @@ export async function initializeDuckDB(): Promise<{
   // Create connection
   conn = await db.connect();
 
+  // Load spatial extension in the main connection
+  try {
+    await conn.query(`INSTALL spatial; LOAD spatial;`);
+    console.log('Spatial extension loaded in main connection');
+  } catch (error) {
+    console.error('Could not load spatial extension:', error);
+  }
+
   console.log('DuckDB-WASM initialized successfully');
 
   return { db, connection: conn };
@@ -52,6 +60,33 @@ export async function executeSql(sql: string): Promise<any[]> {
     throw new Error('DuckDB not initialized. Call initializeDuckDB first.');
   }
 
+  const result = await conn.query(sql);
+  return result.toArray();
+}
+
+export async function createConnection(): Promise<duckdb.AsyncDuckDBConnection | null> {
+  if (!db) {
+    console.error('DuckDB not initialized');
+    return null;
+  }
+
+  const newConn = await db.connect();
+
+  // Load spatial extension for this connection
+  try {
+    await newConn.query(`LOAD spatial;`);
+    console.log('Spatial extension loaded in new connection');
+  } catch (error) {
+    console.error('Could not load spatial extension in new connection:', error);
+  }
+
+  return newConn;
+}
+
+export async function executeWithConnection(
+  conn: duckdb.AsyncDuckDBConnection,
+  sql: string
+): Promise<any[]> {
   const result = await conn.query(sql);
   return result.toArray();
 }

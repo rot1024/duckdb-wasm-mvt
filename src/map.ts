@@ -8,26 +8,28 @@ export function initializeMap(): maplibregl.Map {
     return map;
   }
 
-  // Initialize the map
+  // Initialize the map with a simpler, monochrome style
   map = new maplibregl.Map({
     container: 'map',
     style: {
       version: 8,
       sources: {
-        'osm-tiles': {
+        'carto-light': {
           type: 'raster',
           tiles: [
-            'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+            'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+            'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+            'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'
           ],
           tileSize: 256,
-          attribution: '© OpenStreetMap contributors'
+          attribution: '© OpenStreetMap contributors, © CARTO'
         }
       },
       layers: [
         {
-          id: 'osm-tiles',
+          id: 'carto-light',
           type: 'raster',
-          source: 'osm-tiles',
+          source: 'carto-light',
           minzoom: 0,
           maxzoom: 19
         }

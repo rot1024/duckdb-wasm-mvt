@@ -1,38 +1,47 @@
 import './style.css'
 import { initializeDuckDB, executeSql } from './duckdb'
-import { initializeMap } from './map'
+import { initializeMap, getMap } from './map'
+import { initializeDuckDBProtocol } from './duckdb-protocol'
+import {
+  addDuckDBLayer,
+  detectGeometryColumns,
+  getTableColumns,
+  removeDuckDBLayer,
+  getActiveLayers,
+  toggleLayerVisibility
+} from './map-layers'
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="sidebar">
     <h1>DuckDB-WASM + MapLibre</h1>
 
     <div class="card">
-      <h3>Load Data from URL</h3>
-      <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+      <h3>Load Data</h3>
+      <div style="margin-bottom: 10px;">
         <input
           id="url-input"
           type="text"
-          placeholder="Enter data URL (CSV, JSON, Parquet, etc.)"
-          style="flex: 1; padding: 8px; font-size: 14px;"
-          value="https://raw.githubusercontent.com/duckdb/duckdb/main/data/csv/weather.csv"
+          placeholder="Enter data URL (CSV, JSON, Parquet, GeoJSON, etc.)"
+          style="width: 100%; padding: 8px; font-size: 14px; box-sizing: border-box; margin-bottom: 10px;"
+          value=""
         />
         <input
           id="table-name"
           type="text"
           placeholder="Table name"
-          style="width: 150px; padding: 8px; font-size: 14px;"
+          style="width: 100%; padding: 8px; font-size: 14px; box-sizing: border-box;"
           value="data"
         />
-        <button id="load-btn" type="button" disabled>Load Data</button>
       </div>
+      <div style="display: flex; gap: 10px;">
+        <button id="load-btn" type="button" style="flex: 1;" disabled>Load Data</button>
+        <button id="load-sample-btn" type="button" style="flex: 1;" disabled>Load Sample Points</button>
+      </div>
+    </div>
 
-      <h3>SQL Query</h3>
-      <textarea
-        id="sql-input"
-        placeholder="Enter SQL query (e.g., SELECT * FROM data LIMIT 10)"
-        style="width: 100%; height: 100px; padding: 8px; font-size: 14px; font-family: monospace;"
-      >SELECT * FROM data LIMIT 10</textarea>
-      <button id="query-btn" type="button" style="margin-top: 10px;" disabled>Run Query</button>
+    <div class="card" id="map-layers" style="display: none;">
+      <h3>Map Layers</h3>
+      <div id="layer-list"></div>
     </div>
 
     <div id="output" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc; min-height: 100px; white-space: pre-wrap; font-family: monospace; overflow-x: auto;"></div>
@@ -46,9 +55,10 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 const urlInput = document.querySelector<HTMLInputElement>('#url-input')!
 const tableNameInput = document.querySelector<HTMLInputElement>('#table-name')!
 const loadBtn = document.querySelector<HTMLButtonElement>('#load-btn')!
-const sqlInput = document.querySelector<HTMLTextAreaElement>('#sql-input')!
-const queryBtn = document.querySelector<HTMLButtonElement>('#query-btn')!
+const loadSampleBtn = document.querySelector<HTMLButtonElement>('#load-sample-btn')!
 const output = document.querySelector<HTMLDivElement>('#output')!
+const mapLayersCard = document.querySelector<HTMLDivElement>('#map-layers')!
+const layerList = document.querySelector<HTMLDivElement>('#layer-list')!
 
 let loadedTables: string[] = []
 
@@ -80,15 +90,64 @@ function displayResults(results: any[]) {
   log(header)
   log(separator)
 
-  // Rows
-  results.forEach(row => {
+  // Rows (limit display to 20 rows)
+  const displayRows = Math.min(results.length, 20)
+  for (let i = 0; i < displayRows; i++) {
+    const row = results[i]
     const rowStr = columns.map((col, i) =>
       String(row[col]).padEnd(maxWidths[i])
     ).join(' | ')
     log(rowStr)
-  })
+  }
+
+  if (results.length > displayRows) {
+    log(`... and ${results.length - displayRows} more rows`)
+  }
 
   log(`\n${results.length} rows returned`)
+}
+
+function updateLayerList() {
+  const layers = getActiveLayers()
+  if (layers.length === 0) {
+    mapLayersCard.style.display = 'none'
+    return
+  }
+
+  mapLayersCard.style.display = 'block'
+  layerList.innerHTML = layers.map(layer => `
+    <div style="display: flex; align-items: center; margin: 5px 0;">
+      <input type="checkbox" id="vis-${layer.id}" ${layer.visible ? 'checked' : ''}
+        style="margin-right: 10px;">
+      <label for="vis-${layer.id}" style="flex: 1; cursor: pointer;">
+        ${layer.tableName} (${layer.geometryColumn})
+      </label>
+      <button class="remove-layer" data-id="${layer.id}"
+        style="padding: 4px 8px; font-size: 12px;">Remove</button>
+    </div>
+  `).join('')
+
+  // Add event listeners
+  layers.forEach(layer => {
+    const checkbox = document.querySelector(`#vis-${layer.id}`) as HTMLInputElement
+    checkbox?.addEventListener('change', () => {
+      const map = getMap()
+      if (map) toggleLayerVisibility(map, layer.id)
+    })
+  })
+
+  document.querySelectorAll('.remove-layer').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = (e.target as HTMLElement).getAttribute('data-id')
+      if (id) {
+        const map = getMap()
+        if (map) {
+          removeDuckDBLayer(map, id)
+          updateLayerList()
+        }
+      }
+    })
+  })
 }
 
 // Initialize everything on page load
@@ -101,14 +160,24 @@ function displayResults(results: any[]) {
     log('✅ DuckDB-WASM initialized successfully!')
     const version = (await connection.query('SELECT version()')).toArray()[0].version
     log(`Database version: ${version}`)
+
+    // Load spatial extension
+    try {
+      await executeSql(`INSTALL spatial; LOAD spatial;`)
+      log('✅ Spatial extension loaded')
+    } catch (error) {
+      log('❌ Could not load spatial extension')
+    }
+
     log('\nReady to load data!')
 
     loadBtn.disabled = false
-    queryBtn.disabled = false
+    loadSampleBtn.disabled = false
 
-    // Initialize Map
+    // Initialize Map and protocol
     initializeMap()
-    log('✅ Map initialized successfully!')
+    initializeDuckDBProtocol()
+    log('✅ Map and DuckDB protocol initialized!')
 
   } catch (error) {
     log(`❌ Error initializing: ${error}`)
@@ -137,6 +206,9 @@ loadBtn.addEventListener('click', async () => {
       query = `CREATE OR REPLACE TABLE ${tableName} AS SELECT * FROM read_json_auto('${url}')`
     } else if (url.endsWith('.parquet') || url.includes('.parquet?')) {
       query = `CREATE OR REPLACE TABLE ${tableName} AS SELECT * FROM read_parquet('${url}')`
+    } else if (url.endsWith('.geojson') || url.includes('geojson')) {
+      // For GeoJSON, use ST_Read
+      query = `CREATE OR REPLACE TABLE ${tableName} AS SELECT * FROM ST_Read('${url}')`
     } else {
       // Try to auto-detect
       query = `CREATE OR REPLACE TABLE ${tableName} AS SELECT * FROM '${url}'`
@@ -156,40 +228,38 @@ loadBtn.addEventListener('click', async () => {
     log('\nSchema:')
     displayResults(schemaResult)
 
+    // Check for geometry columns and auto-visualize
+    const geomColumns = await detectGeometryColumns(tableName)
+    if (geomColumns.length > 0) {
+      log(`\n🗺️ Spatial data detected! Geometry columns: ${geomColumns.join(', ')}`)
+
+      // Auto-visualize spatial data
+      const map = getMap()
+      if (map) {
+        log('Auto-visualizing spatial data...')
+
+        // Get all columns
+        const allColumns = await getTableColumns(tableName)
+        const propertyColumns = allColumns.filter(col => !geomColumns.includes(col))
+
+        // Use the first geometry column
+        const geomColumn = geomColumns[0]
+        const layerId = await addDuckDBLayer(map, tableName, geomColumn, propertyColumns)
+
+        if (layerId) {
+          log(`✅ Layer automatically added to map: ${layerId}`)
+          updateLayerList()
+        }
+      }
+    }
+
     // Add to loaded tables list if not already there
     if (!loadedTables.includes(tableName)) {
       loadedTables.push(tableName)
     }
 
-    // Update SQL input with sample query
-    sqlInput.value = `SELECT * FROM ${tableName} LIMIT 10`
-
   } catch (error) {
     log(`❌ Error loading data: ${error}`)
-  }
-})
-
-queryBtn.addEventListener('click', async () => {
-  const sql = sqlInput.value.trim()
-
-  if (!sql) {
-    alert('Please enter a SQL query')
-    return
-  }
-
-  try {
-    clearOutput()
-    log(`Executing query:\n${sql}\n`)
-
-    const startTime = performance.now()
-    const results = await executeSql(sql)
-    const endTime = performance.now()
-
-    log(`Query executed in ${(endTime - startTime).toFixed(2)}ms\n`)
-    displayResults(results)
-
-  } catch (error) {
-    log(`❌ Error executing query: ${error}`)
   }
 })
 
@@ -200,10 +270,61 @@ urlInput.addEventListener('keypress', (e) => {
   }
 })
 
-// Allow Ctrl+Enter to run query in SQL textarea
-sqlInput.addEventListener('keypress', (e) => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !queryBtn.disabled) {
-    e.preventDefault()
-    queryBtn.click()
+loadSampleBtn.addEventListener('click', async () => {
+  try {
+    clearOutput()
+    log('Creating sample spatial data...')
+
+    // Create sample points table
+    const sampleQuery = `
+      CREATE OR REPLACE TABLE sample_points AS
+      SELECT
+        id,
+        name,
+        ST_Point(lng, lat) as geometry,
+        population
+      FROM (
+        VALUES
+          (1, 'Tokyo', 139.6917, 35.6895, 37400068),
+          (2, 'Yokohama', 139.6380, 35.4437, 3776264),
+          (3, 'Osaka', 135.5022, 34.6937, 2728811),
+          (4, 'Nagoya', 136.9066, 35.1815, 2331080),
+          (5, 'Sapporo', 141.3545, 43.0642, 1973832),
+          (6, 'Fukuoka', 130.4017, 33.5904, 1612392),
+          (7, 'Kobe', 135.1951, 34.6901, 1522188),
+          (8, 'Kyoto', 135.7681, 35.0116, 1466937),
+          (9, 'Kawasaki', 139.7172, 35.5208, 1539522),
+          (10, 'Saitama', 139.6566, 35.8617, 1332854)
+      ) AS t(id, name, lng, lat, population)
+    `
+
+    await executeSql(sampleQuery)
+
+    log('✅ Sample points table created!')
+
+    // Show sample data
+    const results = await executeSql('SELECT id, name, ST_AsText(geometry) as geom_wkt, population FROM sample_points ORDER BY population DESC')
+    log('\nSample data:')
+    displayResults(results)
+
+    // Auto-visualize sample points
+    const map = getMap()
+    if (map) {
+      log('\n🗺️ Auto-visualizing sample points...')
+
+      const allColumns = await getTableColumns('sample_points')
+      const geomColumns = ['geometry']
+      const propertyColumns = allColumns.filter(col => !geomColumns.includes(col))
+
+      const layerId = await addDuckDBLayer(map, 'sample_points', 'geometry', propertyColumns)
+
+      if (layerId) {
+        log(`✅ Sample points automatically added to map!`)
+        updateLayerList()
+      }
+    }
+
+  } catch (error) {
+    log(`❌ Error creating sample data: ${error}`)
   }
 })
