@@ -10,6 +10,7 @@ import {
   getActiveLayers,
   toggleLayerVisibility
 } from './map-layers'
+import { performanceTracker } from './performance-tracker'
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="sidebar">
@@ -42,6 +43,18 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="card" id="map-layers" style="display: none;">
       <h3>Map Layers</h3>
       <div id="layer-list"></div>
+    </div>
+
+    <div class="card" id="performance-stats" style="display: none;">
+      <h3>Performance Metrics</h3>
+      <div id="perf-summary" style="margin-bottom: 10px; font-size: 14px;">
+        <div>Total Tiles: <span id="total-tiles">0</span></div>
+        <div>Avg Total Time: <span id="avg-total">-</span>ms</div>
+        <div>Avg Fetch Time: <span id="avg-fetch">-</span>ms</div>
+        <div>Avg Convert Time: <span id="avg-convert">-</span>ms</div>
+      </div>
+      <div id="perf-details" style="max-height: 200px; overflow-y: auto; font-size: 12px; font-family: monospace;"></div>
+      <button id="clear-perf-btn" type="button" style="margin-top: 10px; padding: 4px 8px; font-size: 12px;">Clear Metrics</button>
     </div>
 
     <div id="output" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc; min-height: 100px; white-space: pre-wrap; font-family: monospace; overflow-x: auto;"></div>
@@ -178,6 +191,15 @@ function updateLayerList() {
     initializeMap()
     initializeDuckDBProtocol()
     log('✅ Map and DuckDB protocol initialized!')
+
+    // Set up performance metrics clear button
+    const clearPerfBtn = document.getElementById('clear-perf-btn')
+    if (clearPerfBtn) {
+      clearPerfBtn.addEventListener('click', () => {
+        performanceTracker.clear()
+        log('Performance metrics cleared')
+      })
+    }
 
   } catch (error) {
     log(`❌ Error initializing: ${error}`)

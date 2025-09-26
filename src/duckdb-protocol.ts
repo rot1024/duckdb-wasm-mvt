@@ -9,6 +9,7 @@ import {
   type TileCoordinates
 } from './mvt';
 import type { Feature, Geometry, GeoJsonProperties } from 'geojson';
+import { performanceTracker } from './performance-tracker';
 
 export interface DuckDBLayerConfig {
   tableName: string;
@@ -95,14 +96,17 @@ async function fetchTileData(
   zxy: TileCoordinates
 ): Promise<Feature<Geometry, GeoJsonProperties>[]> {
   let conn: AsyncDuckDBConnection | null = null;
+  const timings: { [key: string]: number } = {};
 
   try {
     // Create a new connection with spatial extension loaded
+    const connStartTime = performance.now();
     conn = await createConnection();
     if (!conn) {
       console.error('Failed to create connection for tile query');
       return [];
     }
+    timings.createConnection = performance.now() - connStartTime;
 
     const { query, params } = generateTileQuery(config, zxy);
 
@@ -112,14 +116,17 @@ async function fetchTileData(
       finalQuery = finalQuery.replace('?', param.toString());
     }
 
-    console.log(`Fetching tile ${zxy.z}/${zxy.x}/${zxy.y} for table ${config.tableName}`);
-
+    // Execute SQL query
+    const queryStartTime = performance.now();
     const results = await executeWithConnection(conn, finalQuery);
+    timings.sqlQuery = performance.now() - queryStartTime;
 
     if (!results || results.length === 0) {
       return [];
     }
 
+    // Parse results to GeoJSON features
+    const parseStartTime = performance.now();
     const features: Feature<Geometry, GeoJsonProperties>[] = [];
 
     for (const row of results) {
@@ -150,8 +157,18 @@ async function fetchTileData(
         properties
       });
     }
+    timings.parseGeoJSON = performance.now() - parseStartTime;
 
-    console.log(`Loaded ${features.length} features for tile ${zxy.z}/${zxy.x}/${zxy.y}`);
+    // Log detailed fetch timings
+    console.log(`⚡ Tile ${zxy.z}/${zxy.x}/${zxy.y} Fetch Details:`, {
+      connection: `${timings.createConnection.toFixed(2)}ms`,
+      sqlQuery: `${timings.sqlQuery.toFixed(2)}ms`,
+      parseGeoJSON: `${timings.parseGeoJSON.toFixed(2)}ms`,
+      totalFetch: `${(timings.createConnection + timings.sqlQuery + timings.parseGeoJSON).toFixed(2)}ms`,
+      resultRows: results.length,
+      features: features.length
+    });
+
     return features;
 
   } catch (error) {
@@ -198,9 +215,43 @@ export function initializeDuckDBProtocol(): void {
         return { data: new Uint8Array() };
       }
 
-      // Fetch data and convert to vector tile
+      // Start performance timing
+      const startTime = performance.now();
+      const timings: { [key: string]: number } = {};
+
+      // Fetch data from DuckDB
+      const fetchStartTime = performance.now();
       const features = await fetchTileData(config, zxy);
+      timings.fetchData = performance.now() - fetchStartTime;
+
+      // Convert to vector tile
+      const convertStartTime = performance.now();
       const vectorTile = geojsonToVectorTile(features, zxy.z, zxy.x, zxy.y);
+      timings.convertToMVT = performance.now() - convertStartTime;
+
+      // Calculate total time
+      timings.total = performance.now() - startTime;
+
+      // Log performance metrics
+      const tileId = `${zxy.z}/${zxy.x}/${zxy.y}`;
+      console.log(`📊 Tile ${tileId} Performance:`, {
+        fetchData: `${timings.fetchData.toFixed(2)}ms`,
+        convertToMVT: `${timings.convertToMVT.toFixed(2)}ms`,
+        total: `${timings.total.toFixed(2)}ms`,
+        features: features.length,
+        tileSize: `${(vectorTile.length / 1024).toFixed(2)}KB`
+      });
+
+      // Track metrics in UI
+      performanceTracker.addMetric({
+        tileId,
+        fetchTime: timings.fetchData,
+        convertTime: timings.convertToMVT,
+        totalTime: timings.total,
+        features: features.length,
+        tileSize: vectorTile.length,
+        timestamp: Date.now()
+      });
 
       return { data: vectorTile };
 
