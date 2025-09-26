@@ -75,8 +75,8 @@ export async function generateMVTNative(
       };
     }
 
-    // Step 2: Convert MVT data to Uint8Array
-    const mvtData = convertMVTToUint8Array(results[0].mvt);
+    // Step 2: MVT data is already Uint8Array from DuckDB-WASM
+    const mvtData = results[0].mvt as Uint8Array;
 
     metrics.tileSize = mvtData.length;
     metrics.totalTime = performance.now() - startTime;
@@ -173,36 +173,6 @@ function generateNativeMVTQuery(
   return query;
 }
 
-/**
- * Convert MVT data from various formats to Uint8Array
- */
-function convertMVTToUint8Array(mvtData: any): Uint8Array {
-  if (mvtData instanceof Uint8Array) {
-    return mvtData;
-  }
-
-  if (mvtData instanceof ArrayBuffer) {
-    return new Uint8Array(mvtData);
-  }
-
-  if (typeof mvtData === 'string') {
-    // Assume base64 encoded
-    const binaryString = atob(mvtData);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes;
-  }
-
-  // Handle Node Buffer
-  if (mvtData && typeof mvtData === 'object' && mvtData.type === 'Buffer' && Array.isArray(mvtData.data)) {
-    return new Uint8Array(mvtData.data);
-  }
-
-  console.error('Unexpected MVT data type:', typeof mvtData, mvtData);
-  return new Uint8Array();
-}
 
 /**
  * Example usage:
@@ -221,11 +191,6 @@ function convertMVTToUint8Array(mvtData: any): Uint8Array {
  *
  * console.log('Tile size:', tile.data.length);
  * console.log('Performance:', tile.metrics);
- *
- * // Compare with GeoJSON approach (actual measurements from 100 tiles):
- * // Native: 31.34ms average total time
- * // GeoJSON: 213.13ms average total time
- * // = 6.8x speedup!
  *
  * await conn.close();
  */
