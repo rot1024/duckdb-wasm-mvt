@@ -8,6 +8,44 @@ export interface LayerInfo {
   geometryColumn: string;
   propertyColumns: string[];
   visible: boolean;
+  indexName?: string;
+}
+
+let spatialIndexEnabled = true;
+
+export function setSpatialIndexEnabled(enabled: boolean): void {
+  spatialIndexEnabled = enabled;
+}
+
+export function isSpatialIndexEnabled(): boolean {
+  return spatialIndexEnabled;
+}
+
+/**
+ * Toggle spatial indexes for all active layers
+ */
+export async function toggleSpatialIndexes(enabled: boolean): Promise<void> {
+  spatialIndexEnabled = enabled;
+
+  if (enabled) {
+    // Create indexes for all active layers that don't have them
+    for (const layer of activeLayers.values()) {
+      if (!layer.indexName) {
+        const indexName = await createSpatialIndex(layer.tableName, layer.geometryColumn);
+        if (indexName) {
+          layer.indexName = indexName;
+        }
+      }
+    }
+  } else {
+    // Drop all indexes
+    for (const layer of activeLayers.values()) {
+      if (layer.indexName) {
+        await dropSpatialIndex(layer.indexName);
+        layer.indexName = undefined;
+      }
+    }
+  }
 }
 
 let layerIdCounter = 0;
@@ -52,6 +90,57 @@ export async function getTableColumns(tableName: string): Promise<string[]> {
 }
 
 /**
+ * Create a spatial index on a geometry column
+ */
+async function createSpatialIndex(
+  tableName: string,
+  geometryColumn: string
+): Promise<string | null> {
+  if (!spatialIndexEnabled) {
+    return null;
+  }
+
+  try {
+    const indexName = `idx_${tableName}_${geometryColumn}`;
+
+    // Check if index already exists
+    const existingIndexResult = await executeSql(`
+      SELECT index_name
+      FROM duckdb_indexes()
+      WHERE table_name = '${tableName}' AND index_name = '${indexName}'
+    `);
+
+    if (existingIndexResult.length > 0) {
+      console.log(`Spatial index ${indexName} already exists`);
+      return indexName;
+    }
+
+    // Create R-Tree spatial index
+    await executeSql(`
+      CREATE INDEX ${indexName} ON "${tableName}" USING RTREE("${geometryColumn}")
+    `);
+
+    console.log(`✅ Created spatial index: ${indexName}`);
+    return indexName;
+  } catch (error) {
+    console.error('Failed to create spatial index:', error);
+    return null;
+  }
+}
+
+/**
+ * Drop a spatial index
+ */
+async function dropSpatialIndex(indexName: string): Promise<void> {
+  try {
+    await executeSql(`DROP INDEX IF EXISTS ${indexName}`);
+    console.log(`Dropped spatial index: ${indexName}`);
+  } catch (error) {
+    console.error('Failed to drop spatial index:', error);
+  }
+}
+
+/**
  * Add a DuckDB table as a map layer
  */
 export async function addDuckDBLayer(
@@ -62,6 +151,9 @@ export async function addDuckDBLayer(
 ): Promise<string | null> {
   try {
     const layerId = `duckdb-layer-${layerIdCounter++}`;
+
+    // Create spatial index if enabled
+    const indexName = await createSpatialIndex(tableName, geometryColumn);
 
     // Register the layer configuration
     registerDuckDBLayer(layerId, {
@@ -159,7 +251,8 @@ export async function addDuckDBLayer(
       tableName,
       geometryColumn,
       propertyColumns,
-      visible: true
+      visible: true,
+      indexName: indexName || undefined
     });
 
     // Add click handler for popups
@@ -199,7 +292,7 @@ export async function addDuckDBLayer(
 /**
  * Remove a DuckDB layer from the map
  */
-export function removeDuckDBLayer(map: maplibregl.Map, layerId: string): void {
+export async function removeDuckDBLayer(map: maplibregl.Map, layerId: string): Promise<void> {
   const layerInfo = activeLayers.get(layerId);
   if (!layerInfo) return;
 
@@ -221,6 +314,11 @@ export function removeDuckDBLayer(map: maplibregl.Map, layerId: string): void {
   // Remove source
   if (map.getSource(layerId)) {
     map.removeSource(layerId);
+  }
+
+  // Drop spatial index if it exists
+  if (layerInfo.indexName) {
+    await dropSpatialIndex(layerInfo.indexName);
   }
 
   // Unregister from protocol

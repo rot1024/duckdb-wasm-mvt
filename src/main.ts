@@ -8,7 +8,8 @@ import {
   getTableColumns,
   removeDuckDBLayer,
   getActiveLayers,
-  toggleLayerVisibility
+  toggleLayerVisibility,
+  toggleSpatialIndexes
 } from './map-layers'
 import { performanceTracker } from './performance-tracker'
 
@@ -60,6 +61,19 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
           <div>
             <strong>GeoJSON + geojson-vt</strong>
             <div style="font-size: 12px; color: #888;">Fetch GeoJSON, convert client-side</div>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Spatial Index</h3>
+      <div style="margin: 10px 0;">
+        <label style="display: flex; align-items: center; cursor: pointer;">
+          <input type="checkbox" id="spatial-index-enabled" checked style="margin-right: 8px;">
+          <div>
+            <strong>Use Spatial Index (R-Tree)</strong>
+            <div style="font-size: 12px; color: #888;">Create spatial indexes on geometry columns for better performance</div>
           </div>
         </label>
       </div>
@@ -122,12 +136,12 @@ function updateLayerList() {
   })
 
   document.querySelectorAll('.remove-layer').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       const id = (e.target as HTMLElement).getAttribute('data-id')
       if (id) {
         const map = getMap()
         if (map) {
-          removeDuckDBLayer(map, id)
+          await removeDuckDBLayer(map, id)
           updateLayerList()
         }
       }
@@ -177,7 +191,7 @@ function updateLayerList() {
     const mvtGeoJsonRadio = document.getElementById('mvt-geojson') as HTMLInputElement
     const mvtNativeRadio = document.getElementById('mvt-native') as HTMLInputElement
 
-    const refreshMapLayers = () => {
+    const refreshMapLayers = async () => {
       const map = getMap()
       if (map) {
         const layers = getActiveLayers()
@@ -190,14 +204,14 @@ function updateLayerList() {
         }))
 
         // Remove all layers
-        layers.forEach(layer => {
-          removeDuckDBLayer(map, layer.id)
-        })
+        const removePromises = layers.map(layer => removeDuckDBLayer(map, layer.id))
+        await Promise.all(removePromises)
 
         // Re-add all layers with new MVT method
-        layerConfigs.forEach(async config => {
-          await addDuckDBLayer(map, config.tableName, config.geometryColumn, config.propertyColumns)
-        })
+        const addPromises = layerConfigs.map(config =>
+          addDuckDBLayer(map, config.tableName, config.geometryColumn, config.propertyColumns)
+        )
+        await Promise.all(addPromises)
 
         // Update layer list UI
         updateLayerList()
@@ -221,6 +235,21 @@ function updateLayerList() {
         setMVTMethod(true)
         refreshMapLayers()
       }
+    })
+
+    // Set up spatial index toggle with automatic index creation/deletion and metrics reset
+    const spatialIndexCheckbox = document.getElementById('spatial-index-enabled') as HTMLInputElement
+
+    spatialIndexCheckbox?.addEventListener('change', async () => {
+      const enabled = spatialIndexCheckbox.checked
+      console.log(`Spatial index ${enabled ? 'enabled' : 'disabled'}`)
+
+      // Toggle indexes for all active layers
+      await toggleSpatialIndexes(enabled)
+
+      // Clear performance metrics for fresh comparison
+      performanceTracker.clear()
+      console.log('Performance metrics cleared after spatial index toggle')
     })
 
   } catch (error) {
