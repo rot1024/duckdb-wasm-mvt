@@ -90,6 +90,28 @@ export async function getTableColumns(tableName: string): Promise<string[]> {
 }
 
 /**
+ * Get column types for a table
+ */
+export async function getTableColumnTypes(tableName: string): Promise<Record<string, string | null>> {
+  try {
+    const result = await executeSql(`
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_name = '${tableName}'
+    `);
+
+    const columnTypes: Record<string, string | null> = {};
+    for (const row of result) {
+      columnTypes[row.column_name] = row.data_type || null;
+    }
+    return columnTypes;
+  } catch (error) {
+    console.error('Error getting column types:', error);
+    return {};
+  }
+}
+
+/**
  * Create a spatial index on a geometry column
  */
 async function createSpatialIndex(
@@ -155,11 +177,15 @@ export async function addDuckDBLayer(
     // Create spatial index if enabled
     const indexName = await createSpatialIndex(tableName, geometryColumn);
 
+    // Get column types for the table
+    const columnTypes = await getTableColumnTypes(tableName);
+
     // Register the layer configuration
     registerDuckDBLayer(layerId, {
       tableName,
       geometryColumn,
-      propertyColumns
+      propertyColumns,
+      columnTypes
     });
 
     // Add source to map
@@ -200,7 +226,7 @@ export async function addDuckDBLayer(
         id: `${layerId}-fill`,
         type: 'fill',
         source: layerId,
-        'source-layer': 'v',
+        'source-layer': 'default',
         paint: {
           'fill-color': '#9333ea',  // Vibrant purple
           'fill-opacity': 0.7
@@ -211,7 +237,7 @@ export async function addDuckDBLayer(
         id: `${layerId}-outline`,
         type: 'line',
         source: layerId,
-        'source-layer': 'v',
+        'source-layer': 'default',
         paint: {
           'line-color': '#6b21a8',  // Darker purple
           'line-width': 2
@@ -223,7 +249,7 @@ export async function addDuckDBLayer(
         id: `${layerId}-line`,
         type: 'line',
         source: layerId,
-        'source-layer': 'v',
+        'source-layer': 'default',
         paint: {
           'line-color': '#10b981',  // Vibrant green
           'line-width': 3
@@ -235,7 +261,7 @@ export async function addDuckDBLayer(
         id: `${layerId}-circle`,
         type: 'circle',
         source: layerId,
-        'source-layer': 'v',
+        'source-layer': 'default',
         paint: {
           'circle-radius': 8,
           'circle-color': '#f97316',  // Vibrant orange

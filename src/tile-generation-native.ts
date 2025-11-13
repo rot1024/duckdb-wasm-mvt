@@ -29,6 +29,7 @@ export interface LayerConfig {
   geometryColumn: string;
   propertyColumns: string[];
   schema?: string;
+  columnTypes?: Record<string, string | null>;
 }
 
 /**
@@ -101,12 +102,42 @@ export async function generateMVTNative(
 
 /**
  * Calculate simplification tolerance based on zoom level
+ * Linear interpolation: z=0 -> 0.001, z=15+ -> 0
  */
-function calculateSimplifyTolerance(z: number): number {
-  if (z <= 5) return 0.01;
-  if (z <= 10) return 0.001;
-  if (z <= 15) return 0.0001;
-  return 0.00001;
+function calculateSimplifyTolerance(zoom: number): number {
+  if (zoom >= 15) return 0;
+  const maxSimplify = 0.001; // z=0で最大、z=15で0へ線形
+  const t = Math.max(0, Math.min(1, zoom / 15));
+  return Number((maxSimplify * (1 - t)).toFixed(6));
+}
+
+/**
+ * Check if a column type should be stringified for MVT
+ * Complex types (STRUCT, LIST, MAP, etc.) need to be cast to VARCHAR
+ */
+function shouldStringifyColumn(columnType?: string | null): boolean {
+  if (!columnType) return false;
+  const t = columnType.toUpperCase();
+  return (
+    t.includes('STRUCT') ||
+    t.includes('LIST') ||
+    t.includes('[]') ||
+    t.includes('MAP') ||
+    t.includes('JSON') ||
+    t.includes('UNION')
+  );
+}
+
+/**
+ * Get the target integer type for casting
+ * Some integer types need to be cast to INTEGER or BIGINT for MVT compatibility
+ */
+function getIntegerCastTarget(columnType?: string | null): 'INTEGER' | 'BIGINT' | null {
+  if (!columnType) return null;
+  const t = columnType.toUpperCase();
+  if (t === 'TINYINT' || t === 'SMALLINT' || t === 'UTINYINT' || t === 'USMALLINT') return 'INTEGER';
+  if (t === 'HUGEINT' || t === 'UHUGEINT' || t === 'UINTEGER' || t === 'UBIGINT') return 'BIGINT';
+  return null; // INTEGER, BIGINT はそのまま
 }
 
 /**
@@ -115,22 +146,43 @@ function calculateSimplifyTolerance(z: number): number {
  * Key points:
  * 1. ST_Transform with always_xy=true (4th parameter) to force lon,lat order
  * 2. ST_Extent wraps ST_TileEnvelope to create BOX_2D type
- * 3. TRY_CAST for safe property conversion to VARCHAR
+ * 3. Smart type casting based on column types (complex types -> VARCHAR, some integers -> INTEGER/BIGINT)
  * 4. Two-step process: prepare features, then generate MVT
  */
 function generateNativeMVTQuery(
   config: LayerConfig,
   zxy: TileCoordinates
 ): string {
-  const { tableName, geometryColumn, propertyColumns, schema } = config;
+  const { tableName, geometryColumn, propertyColumns, schema, columnTypes } = config;
   const { z, x, y } = zxy;
 
   const fullTableName = schema ? `"${schema}"."${tableName}"` : `"${tableName}"`;
 
-  // Build property selection with TRY_CAST for safety
-  const propertySelection = propertyColumns.length > 0
-    ? propertyColumns.map(col => `'${col}': TRY_CAST("${col}" AS VARCHAR)`).join(',\n          ')
-    : '';
+  // Build property selection with smart type casting
+  const propertySelection = propertyColumns
+    .map((col) => {
+      const type = columnTypes?.[col] ?? null;
+      const key = col.replace(/'/g, "''"); // Escape single quotes in column name
+      let expr: string;
+
+      if (shouldStringifyColumn(type)) {
+        // Complex types need to be stringified
+        expr = `TRY_CAST("${col}" AS VARCHAR)`;
+      } else {
+        const intTarget = getIntegerCastTarget(type);
+        if (intTarget) {
+          // Some integer types need explicit casting
+          expr = `TRY_CAST("${col}" AS ${intTarget})`;
+        } else {
+          // Supported types can be used as-is
+          expr = `"${col}"`;
+        }
+      }
+      return `'${key}': ${expr}`;
+    })
+    .join(',\n          ');
+
+  const simplify = calculateSimplifyTolerance(z);
 
   const query = `
     WITH tile_data AS (
@@ -139,7 +191,7 @@ function generateNativeMVTQuery(
                 -- Transform geometry to Web Mercator (EPSG:3857)
                 -- CRITICAL: always_xy=true ensures lon,lat order
                 ST_Transform(
-                    ST_SimplifyPreserveTopology("${geometryColumn}", ${calculateSimplifyTolerance(z)}),
+                    ST_SimplifyPreserveTopology("${geometryColumn}", ${simplify}),
                     'EPSG:4326',
                     'EPSG:3857',
                     true  -- Force lon,lat order (always_xy)
@@ -147,7 +199,7 @@ function generateNativeMVTQuery(
                 -- Create tile boundary as BOX_2D
                 ST_Extent(ST_TileEnvelope(${z}, ${x}, ${y})),
                 4096,  -- Tile resolution
-                256,   -- Buffer in pixels
+                0,     -- Buffer in pixels
                 false  -- Don't clip geometry
             )${propertySelection ? ',\n            ' + propertySelection : ''}
         } AS feature
@@ -158,16 +210,16 @@ function generateNativeMVTQuery(
                 ST_Transform("${geometryColumn}", 'EPSG:4326', 'EPSG:3857', true),
                 ST_TileEnvelope(${z}, ${x}, ${y})
             )
-        LIMIT 10000  -- Prevent excessive features per tile
+        LIMIT 50000  -- Prevent excessive features per tile
     )
     SELECT ST_AsMVT(
         feature,       -- Feature STRUCT
-        'v',          -- Layer name in MVT
-        4096,         -- Extent (must match ST_AsMVTGeom)
-        'geometry'    -- Geometry column name in STRUCT
+        'default',     -- Layer name in MVT
+        4096,          -- Extent (must match ST_AsMVTGeom)
+        'geometry'     -- Geometry column name in STRUCT
     ) AS mvt
     FROM tile_data
-    WHERE feature.geometry IS NOT NULL  -- Exclude failed transformations
+    WHERE feature.geometry IS NOT NULL AND NOT ST_IsEmpty(feature.geometry)  -- Exclude failed transformations and empty geometries
   `;
 
   return query;
@@ -181,10 +233,22 @@ function generateNativeMVTQuery(
  * const conn = await db.connect();
  * await conn.query('LOAD spatial;');
  *
- * const config = {
+ * // Get column types from information_schema
+ * const typeResults = await conn.query(`
+ *   SELECT column_name, data_type
+ *   FROM information_schema.columns
+ *   WHERE table_name = 'buildings'
+ * `);
+ * const columnTypes: Record<string, string | null> = {};
+ * for (const row of typeResults.toArray()) {
+ *   columnTypes[row.column_name] = row.data_type;
+ * }
+ *
+ * const config: LayerConfig = {
  *   tableName: 'buildings',
  *   geometryColumn: 'geom',
- *   propertyColumns: ['name', 'height', 'type']
+ *   propertyColumns: ['name', 'height', 'type'],
+ *   columnTypes
  * };
  *
  * const tile = await generateMVTNative(conn, config, { z: 14, x: 8192, y: 5460 });

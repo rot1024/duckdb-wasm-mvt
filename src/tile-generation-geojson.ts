@@ -71,16 +71,10 @@ export async function generateMVTFromGeoJSON(
 
   try {
     // Step 1: Generate and execute SQL query
-    const { query, params } = generateTileQuery(config, zxy);
-
-    // Replace placeholders with actual values
-    let finalQuery = query;
-    for (const param of params) {
-      finalQuery = finalQuery.replace('?', param.toString());
-    }
+    const { query } = generateTileQuery(config, zxy);
 
     const queryStartTime = performance.now();
-    const results = (await conn.query(finalQuery)).toArray();
+    const results = (await conn.query(query)).toArray();
     metrics.queryTime = performance.now() - queryStartTime;
 
     if (!results || results.length === 0) {
@@ -152,28 +146,6 @@ export async function generateMVTFromGeoJSON(
 // ============================================================================
 
 /**
- * Convert tile coordinates to WGS84 bounds
- */
-function getTileEnvelope(z: number, x: number, y: number): {
-  minLng: number;
-  minLat: number;
-  maxLng: number;
-  maxLat: number;
-} {
-  const n = Math.pow(2, z);
-  const minLng = (x / n) * 360 - 180;
-  const maxLng = ((x + 1) / n) * 360 - 180;
-
-  const minLatRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n)));
-  const minLat = (minLatRad * 180) / Math.PI;
-
-  const maxLatRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n)));
-  const maxLat = (maxLatRad * 180) / Math.PI;
-
-  return { minLng, minLat, maxLng, maxLat };
-}
-
-/**
  * Calculate simplification tolerance based on zoom level
  */
 function calculateSimplifyTolerance(z: number): number {
@@ -233,7 +205,7 @@ function geojsonToVectorTile(
   }
 
   // Convert to MVT format
-  const buff = vtpbf.fromGeojsonVt({ 'v': tile });
+  const buff = vtpbf.fromGeojsonVt({ 'default': tile });
   return new Uint8Array(buff);
 }
 
@@ -245,8 +217,8 @@ function generateTileQuery(
   zxy: TileCoordinates
 ): { query: string; params: number[] } {
   const { tableName, geometryColumn, propertyColumns, schema } = config;
-  const bounds = getTileEnvelope(zxy.z, zxy.x, zxy.y);
   const simplify = calculateSimplifyTolerance(zxy.z);
+  const { z, x, y } = zxy;
 
   const fullTableName = schema ? `"${schema}"."${tableName}"` : `"${tableName}"`;
 
@@ -257,7 +229,7 @@ function generateTileQuery(
       ).join(', ')
     : '';
 
-  // Build the query
+  // Build the query using ST_TileEnvelope
   let query: string;
 
   if (simplify > 0) {
@@ -269,8 +241,8 @@ function generateTileQuery(
           ${propertyColumns.length > 0 ? ', ' + propertyColumns.map(col => `"${col}"`).join(', ') : ''}
         FROM ${fullTableName}
         WHERE ST_Intersects(
-          "${geometryColumn}",
-          ST_MakeEnvelope(CAST(? AS DOUBLE), CAST(? AS DOUBLE), CAST(? AS DOUBLE), CAST(? AS DOUBLE))
+          ST_Transform("${geometryColumn}", 'EPSG:4326', 'EPSG:3857', true),
+          ST_TileEnvelope(${z}, ${x}, ${y})
         )
       )
       SELECT
@@ -289,8 +261,8 @@ function generateTileQuery(
           ${propertyColumns.length > 0 ? ', ' + propertyColumns.map(col => `"${col}"`).join(', ') : ''}
         FROM ${fullTableName}
         WHERE ST_Intersects(
-          "${geometryColumn}",
-          ST_MakeEnvelope(CAST(? AS DOUBLE), CAST(? AS DOUBLE), CAST(? AS DOUBLE), CAST(? AS DOUBLE))
+          ST_Transform("${geometryColumn}", 'EPSG:4326', 'EPSG:3857', true),
+          ST_TileEnvelope(${z}, ${x}, ${y})
         )
       )
       SELECT
@@ -300,9 +272,7 @@ function generateTileQuery(
     `;
   }
 
-  const params = [bounds.minLng, bounds.minLat, bounds.maxLng, bounds.maxLat];
-
-  return { query, params };
+  return { query, params: [] };
 }
 
 /**

@@ -11,6 +11,7 @@ export interface DuckDBLayerConfig {
   geometryColumn: string;
   propertyColumns: string[];
   schema?: string;
+  columnTypes?: Record<string, string | null>;
 }
 
 const activeConfigs = new Map<string, DuckDBLayerConfig>();
@@ -73,7 +74,8 @@ export function initializeDuckDBProtocol(): void {
           tableName: config.tableName,
           geometryColumn: config.geometryColumn,
           propertyColumns: config.propertyColumns,
-          schema: config.schema
+          schema: config.schema,
+          columnTypes: config.columnTypes
         };
 
         const tileId = `${zxy.z}/${zxy.x}/${zxy.y}`;
