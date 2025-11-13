@@ -349,150 +349,52 @@ urlInput.addEventListener('keypress', (e) => {
 
 loadSampleBtn.addEventListener('click', async () => {
   try {
-    console.log('Creating sample spatial data...')
+    console.log('Loading sample data from japan_cities.parquet...')
 
-    // Create sample points table
-    const pointsQuery = `
-      CREATE OR REPLACE TABLE sample_points AS
-      SELECT
-        id,
-        name,
-        ST_Point(lng, lat) as geometry,
-        population
-      FROM (
-        VALUES
-          (1, 'Tokyo', 139.6917, 35.6895, 37400068),
-          (2, 'Yokohama', 139.6380, 35.4437, 3776264),
-          (3, 'Osaka', 135.5022, 34.6937, 2728811),
-          (4, 'Nagoya', 136.9066, 35.1815, 2331080),
-          (5, 'Sapporo', 141.3545, 43.0642, 1973832),
-          (6, 'Fukuoka', 130.4017, 33.5904, 1612392),
-          (7, 'Kobe', 135.1951, 34.6901, 1522188),
-          (8, 'Kyoto', 135.7681, 35.0116, 1466937),
-          (9, 'Kawasaki', 139.7172, 35.5208, 1539522),
-          (10, 'Saitama', 139.6566, 35.8617, 1332854)
-      ) AS t(id, name, lng, lat, population)
-    `
+    // Load japan_cities.parquet
+    const parquetUrl = `${window.location.origin}${import.meta.env.BASE_URL}japan_cities.parquet`
+    const query = `CREATE OR REPLACE TABLE japan_cities AS SELECT * FROM read_parquet('${parquetUrl}')`
+    await executeSql(query)
 
-    // Create sample polygons table (prefectures/regions)
-    const polygonsQuery = `
-      CREATE OR REPLACE TABLE sample_polygons AS
-      SELECT
-        id,
-        name,
-        ST_GeomFromText(wkt) as geometry,
-        area_type,
-        population_density
-      FROM (
-        VALUES
-          (1, 'Tokyo Metropolitan Area',
-           'POLYGON((139.5 35.5, 139.5 35.8, 139.9 35.8, 139.9 35.5, 139.5 35.5))',
-           'metropolitan', 6400),
-          (2, 'Osaka Metropolitan Area',
-           'POLYGON((135.3 34.5, 135.3 34.8, 135.7 34.8, 135.7 34.5, 135.3 34.5))',
-           'metropolitan', 4640),
-          (3, 'Nagoya Metropolitan Area',
-           'POLYGON((136.7 35.0, 136.7 35.3, 137.1 35.3, 137.1 35.0, 136.7 35.0))',
-           'metropolitan', 1450),
-          (4, 'Kanto Plain',
-           'POLYGON((139.2 35.4, 139.2 36.0, 140.2 36.0, 140.2 35.4, 139.2 35.4))',
-           'region', 1200),
-          (5, 'Kansai Region',
-           'POLYGON((134.8 34.3, 134.8 35.2, 136.0 35.2, 136.0 34.3, 134.8 34.3))',
-           'region', 890),
-          (6, 'Hokkaido North',
-           'POLYGON((141.0 43.0, 141.0 43.5, 142.0 43.5, 142.0 43.0, 141.0 43.0))',
-           'rural', 68),
-          (7, 'Kyushu Central',
-           'POLYGON((130.0 33.3, 130.0 34.0, 131.0 34.0, 131.0 33.3, 130.0 33.3))',
-           'rural', 340)
-      ) AS t(id, name, wkt, area_type, population_density)
-    `
+    // Get row count
+    const countResult = await executeSql(`SELECT COUNT(*) as count FROM japan_cities`)
+    const rowCount = countResult[0].count
 
-    // Create sample lines table (railways/roads)
-    const linesQuery = `
-      CREATE OR REPLACE TABLE sample_lines AS
-      SELECT
-        id,
-        name,
-        ST_GeomFromText(wkt) as geometry,
-        line_type,
-        length_km
-      FROM (
-        VALUES
-          (1, 'Tokaido Shinkansen',
-           'LINESTRING(139.6917 35.6895, 139.6380 35.4437, 136.9066 35.1815, 135.7681 35.0116, 135.5022 34.6937)',
-           'railway', 515),
-          (2, 'Tohoku Expressway',
-           'LINESTRING(139.6917 35.6895, 139.6566 35.8617, 139.7 36.0, 140.0 36.5, 141.3545 43.0642)',
-           'highway', 680),
-          (3, 'Osaka Loop Line',
-           'LINESTRING(135.5022 34.6937, 135.52 34.71, 135.53 34.70, 135.51 34.68, 135.5022 34.6937)',
-           'railway', 21),
-          (4, 'Kyushu Expressway',
-           'LINESTRING(130.4017 33.5904, 130.5 33.7, 130.7 33.9, 131.0 34.1)',
-           'highway', 120)
-      ) AS t(id, name, wkt, line_type, length_km)
-    `
+    console.log(`✅ Table 'japan_cities' created successfully!`)
+    console.log(`Rows: ${rowCount}`)
 
-    // Execute all queries
-    await executeSql(pointsQuery)
-    console.log('✅ Sample points table created!')
+    // Auto-visualize the data
+    const geomColumns = await detectGeometryColumns('japan_cities')
+    if (geomColumns.length > 0) {
+      console.log(`🗺️ Spatial data detected! Geometry columns: ${geomColumns.join(', ')}`)
 
-    await executeSql(polygonsQuery)
-    console.log('✅ Sample polygons table created!')
+      const map = getMap()
+      if (map) {
+        console.log('Auto-visualizing sample data...')
 
-    await executeSql(linesQuery)
-    console.log('✅ Sample lines table created!')
+        // Get all columns
+        const allColumns = await getTableColumns('japan_cities')
+        const propertyColumns = allColumns.filter(col => !geomColumns.includes(col))
 
-    // Show sample data
-    const pointResults = await executeSql('SELECT COUNT(*) as count FROM sample_points')
-    const polygonResults = await executeSql('SELECT COUNT(*) as count FROM sample_polygons')
-    const lineResults = await executeSql('SELECT COUNT(*) as count FROM sample_lines')
+        // Use the first geometry column
+        const geomColumn = geomColumns[0]
+        const layerId = await addDuckDBLayer(map, 'japan_cities', geomColumn, propertyColumns)
 
-    console.log('Sample data created:', {
-      points: pointResults[0].count,
-      polygons: polygonResults[0].count,
-      lines: lineResults[0].count
-    })
+        if (layerId) {
+          console.log(`✅ Japan cities layer added to map: ${layerId}`)
+          updateLayerList()
 
-    // Auto-visualize all sample layers
-    const map = getMap()
-    if (map) {
-      console.log('🗺️ Auto-visualizing sample data...')
-
-      // Add polygons first (so they appear below other features)
-      const polygonColumns = await getTableColumns('sample_polygons')
-      const polygonProps = polygonColumns.filter(col => col !== 'geometry')
-      const polygonLayerId = await addDuckDBLayer(map, 'sample_polygons', 'geometry', polygonProps)
-      if (polygonLayerId) {
-        console.log('✅ Sample polygons added to map!')
+          // Fit map to show all of Japan
+          map.fitBounds([[129, 33], [143, 44]], { padding: 50 })
+        }
       }
-
-      // Add lines
-      const lineColumns = await getTableColumns('sample_lines')
-      const lineProps = lineColumns.filter(col => col !== 'geometry')
-      const lineLayerId = await addDuckDBLayer(map, 'sample_lines', 'geometry', lineProps)
-      if (lineLayerId) {
-        console.log('✅ Sample lines added to map!')
-      }
-
-      // Add points last (so they appear on top)
-      const pointColumns = await getTableColumns('sample_points')
-      const pointProps = pointColumns.filter(col => col !== 'geometry')
-      const pointLayerId = await addDuckDBLayer(map, 'sample_points', 'geometry', pointProps)
-      if (pointLayerId) {
-        console.log('✅ Sample points added to map!')
-      }
-
-      updateLayerList()
-
-      // Fit map to show all of Japan
-      map.fitBounds([[129, 33], [143, 44]], { padding: 50 })
+    } else {
+      console.warn(`⚠️ No geometry columns found in japan_cities`)
+      alert(`No spatial data detected in the sample data.`)
     }
 
   } catch (error) {
-    console.error('❌ Error creating sample data:', error)
-    alert(`Failed to create sample data: ${error}`)
+    console.error('❌ Error loading sample data:', error)
+    alert(`Failed to load sample data: ${error}`)
   }
 })
