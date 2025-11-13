@@ -71,7 +71,7 @@ export async function generateMVTFromGeoJSON(
 
   try {
     // Step 1: Generate and execute SQL query
-    const { query } = generateTileQuery(config, zxy);
+    const query = generateTileQuery(config, zxy);
 
     const queryStartTime = performance.now();
     const results = (await conn.query(query)).toArray();
@@ -210,38 +210,59 @@ function geojsonToVectorTile(
 }
 
 /**
+ * Escape SQL identifier (table/column names) for safe use in double quotes
+ * Double quotes in identifiers need to be escaped as ""
+ */
+function escapeIdentifier(identifier: string): string {
+  return identifier.replace(/"/g, '""');
+}
+
+/**
  * Generate SQL query for fetching GeoJSON data
  */
 function generateTileQuery(
   config: LayerConfig,
   zxy: TileCoordinates
-): { query: string; params: number[] } {
+): string {
   const { tableName, geometryColumn, propertyColumns, schema } = config;
   const simplify = calculateSimplifyTolerance(zxy.z);
   const { z, x, y } = zxy;
 
-  const fullTableName = schema ? `"${schema}"."${tableName}"` : `"${tableName}"`;
+  // Safely escape identifiers
+  const escapedTableName = escapeIdentifier(tableName);
+  const escapedGeomColumn = escapeIdentifier(geometryColumn);
+  const fullTableName = schema
+    ? `"${escapeIdentifier(schema)}"."${escapedTableName}"`
+    : `"${escapedTableName}"`;
 
   // Build column selection with JSON conversion for complex types
   const columnSelection = propertyColumns.length > 0
-    ? ', ' + propertyColumns.map(col =>
-        `to_json("${col}")::VARCHAR as "${col}"`
-      ).join(', ')
+    ? ', ' + propertyColumns.map(col => {
+        const escapedCol = escapeIdentifier(col);
+        return `to_json("${escapedCol}")::VARCHAR as "${escapedCol}"`;
+      }).join(', ')
     : '';
 
   // Build the query using ST_TileEnvelope
+  // Note: Numeric values (z, x, y, simplify) are safe to embed directly
+  // as they come from JavaScript number types with no injection risk.
+  // Identifiers are escaped using escapeIdentifier().
   let query: string;
+
+  const escapedColList = propertyColumns.length > 0
+    ? ', ' + propertyColumns.map(col => `"${escapeIdentifier(col)}"`).join(', ')
+    : '';
 
   if (simplify > 0) {
     // With simplification
     query = `
       WITH filtered AS (
         SELECT
-          "${geometryColumn}" as geom
-          ${propertyColumns.length > 0 ? ', ' + propertyColumns.map(col => `"${col}"`).join(', ') : ''}
+          "${escapedGeomColumn}" as geom
+          ${escapedColList}
         FROM ${fullTableName}
         WHERE ST_Intersects(
-          ST_Transform("${geometryColumn}", 'EPSG:4326', 'EPSG:3857', true),
+          ST_Transform("${escapedGeomColumn}", 'EPSG:4326', 'EPSG:3857', true),
           ST_TileEnvelope(${z}, ${x}, ${y})
         )
       )
@@ -257,11 +278,11 @@ function generateTileQuery(
     query = `
       WITH filtered AS (
         SELECT
-          "${geometryColumn}" as geom
-          ${propertyColumns.length > 0 ? ', ' + propertyColumns.map(col => `"${col}"`).join(', ') : ''}
+          "${escapedGeomColumn}" as geom
+          ${escapedColList}
         FROM ${fullTableName}
         WHERE ST_Intersects(
-          ST_Transform("${geometryColumn}", 'EPSG:4326', 'EPSG:3857', true),
+          ST_Transform("${escapedGeomColumn}", 'EPSG:4326', 'EPSG:3857', true),
           ST_TileEnvelope(${z}, ${x}, ${y})
         )
       )
@@ -272,7 +293,7 @@ function generateTileQuery(
     `;
   }
 
-  return { query, params: [] };
+  return query;
 }
 
 /**

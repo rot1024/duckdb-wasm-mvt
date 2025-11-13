@@ -149,6 +149,14 @@ function getIntegerCastTarget(columnType?: string | null): 'INTEGER' | 'BIGINT' 
  * 3. Smart type casting based on column types (complex types -> VARCHAR, some integers -> INTEGER/BIGINT)
  * 4. Two-step process: prepare features, then generate MVT
  */
+/**
+ * Escape SQL identifier (table/column names) for safe use in double quotes
+ * Double quotes in identifiers need to be escaped as ""
+ */
+function escapeIdentifier(identifier: string): string {
+  return identifier.replace(/"/g, '""');
+}
+
 function generateNativeMVTQuery(
   config: LayerConfig,
   zxy: TileCoordinates
@@ -156,26 +164,32 @@ function generateNativeMVTQuery(
   const { tableName, geometryColumn, propertyColumns, schema, columnTypes } = config;
   const { z, x, y } = zxy;
 
-  const fullTableName = schema ? `"${schema}"."${tableName}"` : `"${tableName}"`;
+  // Safely escape identifiers
+  const escapedTableName = escapeIdentifier(tableName);
+  const escapedGeomColumn = escapeIdentifier(geometryColumn);
+  const fullTableName = schema
+    ? `"${escapeIdentifier(schema)}"."${escapedTableName}"`
+    : `"${escapedTableName}"`;
 
   // Build property selection with smart type casting
   const propertySelection = propertyColumns
     .map((col) => {
       const type = columnTypes?.[col] ?? null;
-      const key = col.replace(/'/g, "''"); // Escape single quotes in column name
+      const escapedCol = escapeIdentifier(col);
+      const key = col.replace(/'/g, "''"); // Escape single quotes in property key
       let expr: string;
 
       if (shouldStringifyColumn(type)) {
         // Complex types need to be stringified
-        expr = `TRY_CAST("${col}" AS VARCHAR)`;
+        expr = `TRY_CAST("${escapedCol}" AS VARCHAR)`;
       } else {
         const intTarget = getIntegerCastTarget(type);
         if (intTarget) {
           // Some integer types need explicit casting
-          expr = `TRY_CAST("${col}" AS ${intTarget})`;
+          expr = `TRY_CAST("${escapedCol}" AS ${intTarget})`;
         } else {
           // Supported types can be used as-is
-          expr = `"${col}"`;
+          expr = `"${escapedCol}"`;
         }
       }
       return `'${key}': ${expr}`;
@@ -184,6 +198,9 @@ function generateNativeMVTQuery(
 
   const simplify = calculateSimplifyTolerance(z);
 
+  // Note: Numeric values (z, x, y, simplify) are safe to embed directly
+  // as they come from JavaScript number types with no injection risk.
+  // Identifiers are escaped using escapeIdentifier().
   const query = `
     WITH tile_data AS (
         SELECT {
@@ -191,7 +208,7 @@ function generateNativeMVTQuery(
                 -- Transform geometry to Web Mercator (EPSG:3857)
                 -- CRITICAL: always_xy=true ensures lon,lat order
                 ST_Transform(
-                    ST_SimplifyPreserveTopology("${geometryColumn}", ${simplify}),
+                    ST_SimplifyPreserveTopology("${escapedGeomColumn}", ${simplify}),
                     'EPSG:4326',
                     'EPSG:3857',
                     true  -- Force lon,lat order (always_xy)
@@ -204,10 +221,10 @@ function generateNativeMVTQuery(
             )${propertySelection ? ',\n            ' + propertySelection : ''}
         } AS feature
         FROM ${fullTableName}
-        WHERE "${geometryColumn}" IS NOT NULL
+        WHERE "${escapedGeomColumn}" IS NOT NULL
             AND ST_Intersects(
                 -- Transform to Web Mercator for intersection test
-                ST_Transform("${geometryColumn}", 'EPSG:4326', 'EPSG:3857', true),
+                ST_Transform("${escapedGeomColumn}", 'EPSG:4326', 'EPSG:3857', true),
                 ST_TileEnvelope(${z}, ${x}, ${y})
             )
         LIMIT 50000  -- Prevent excessive features per tile
