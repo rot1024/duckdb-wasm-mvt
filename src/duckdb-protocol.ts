@@ -4,7 +4,8 @@ import { generateMVTFromGeoJSON } from './tile-generation-geojson';
 import { generateMVTNative } from './tile-generation-native';
 import { createConnection } from './duckdb';
 import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm';
-import type { TileCoordinates, LayerConfig } from './tile-generation-geojson';
+import type { TileCoordinates as TileCoordinatesNative, LayerConfig } from './tile-generation-native';
+import type { LayerConfig as LayerConfigGeoJSON } from './tile-generation-geojson';
 
 export interface DuckDBLayerConfig {
   tableName: string;
@@ -44,7 +45,7 @@ export function initializeDuckDBProtocol(): void {
       }
 
       const [, configId, z, x, y] = match;
-      const zxy: TileCoordinates = {
+      const zxy: TileCoordinatesNative = {
         z: parseInt(z),
         x: parseInt(x),
         y: parseInt(y)
@@ -69,19 +70,19 @@ export function initializeDuckDBProtocol(): void {
         }
         const connectionTime = performance.now() - connStartTime;
 
-        // Convert config to LayerConfig format
-        const layerConfig: LayerConfig = {
-          tableName: config.tableName,
-          geometryColumn: config.geometryColumn,
-          propertyColumns: config.propertyColumns,
-          schema: config.schema,
-          columnTypes: config.columnTypes
-        };
-
         const tileId = `${zxy.z}/${zxy.x}/${zxy.y}`;
 
         // Use native MVT or GeoJSON method based on flag
         if (useNativeMVT) {
+          // Convert config to Native MVT LayerConfig format
+          const layerConfig: LayerConfig = {
+            tableName: config.tableName,
+            geometryColumn: config.geometryColumn,
+            propertyColumns: config.propertyColumns,
+            schema: config.schema,
+            columnTypes: config.columnTypes
+          };
+
           // Use native ST_AsMVT method
           const result = await generateMVTNative(conn, layerConfig, zxy);
 
@@ -106,8 +107,16 @@ export function initializeDuckDBProtocol(): void {
           return { data: result.data };
 
         } else {
+          // Convert config to GeoJSON LayerConfig format (without columnTypes)
+          const layerConfigGeoJSON: LayerConfigGeoJSON = {
+            tableName: config.tableName,
+            geometryColumn: config.geometryColumn,
+            propertyColumns: config.propertyColumns,
+            schema: config.schema
+          };
+
           // Use GeoJSON + geojson-vt method
-          const result = await generateMVTFromGeoJSON(conn, layerConfig, zxy);
+          const result = await generateMVTFromGeoJSON(conn, layerConfigGeoJSON, zxy);
 
           console.log(`📊 GeoJSON Tile ${tileId}:`, {
             connection: `${connectionTime.toFixed(2)}ms`,
