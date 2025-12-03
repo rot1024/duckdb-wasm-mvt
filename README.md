@@ -279,6 +279,10 @@ ST_SimplifyPreserveTopology(geom, 0.0001)
 4. **Filter early**: Use WHERE clause before complex operations
 5. **Cache connections**: Reuse DuckDB connections when possible
 
+## 📦 Sample Data
+
+The `japan_cities.parquet` file included in this project is derived from [National Land Numerical Information (国土数値情報)](https://nlftp.mlit.go.jp/ksj/) provided by the Ministry of Land, Infrastructure, Transport and Tourism (MLIT) of Japan.
+
 ## 🔗 Resources
 
 - [DuckDB Spatial Extension](https://duckdb.org/docs/extensions/spatial)
