@@ -202,13 +202,33 @@ function generateNativeMVTQuery(
   // as they come from JavaScript number types with no injection risk.
   // Identifiers are escaped using escapeIdentifier().
   const query = `
-    WITH tile_data AS (
+    WITH filtered AS (
+        -- First filter by tile intersection
+        SELECT
+            "${escapedGeomColumn}" AS geom
+            ${propertyColumns.length > 0 ? ', ' + propertyColumns.map(col => `"${escapeIdentifier(col)}"`).join(', ') : ''}
+        FROM ${fullTableName}
+        WHERE "${escapedGeomColumn}" IS NOT NULL
+            AND ST_Intersects(
+                ST_Transform("${escapedGeomColumn}", 'EPSG:4326', 'EPSG:3857', true),
+                ST_TileEnvelope(${z}, ${x}, ${y})
+            )
+        LIMIT 50000
+    ),
+    dumped AS (
+        -- Decompose MultiGeometry and GeometryCollection into individual geometries
+        SELECT
+            UNNEST(ST_Dump(geom)).geom AS geom
+            ${propertyColumns.length > 0 ? ', ' + propertyColumns.map(col => `"${escapeIdentifier(col)}"`).join(', ') : ''}
+        FROM filtered
+    ),
+    tile_data AS (
         SELECT {
             'geometry': ST_AsMVTGeom(
                 -- Transform geometry to Web Mercator (EPSG:3857)
                 -- CRITICAL: always_xy=true ensures lon,lat order
                 ST_Transform(
-                    ST_SimplifyPreserveTopology("${escapedGeomColumn}", ${simplify}),
+                    ST_SimplifyPreserveTopology(geom, ${simplify}),
                     'EPSG:4326',
                     'EPSG:3857',
                     true  -- Force lon,lat order (always_xy)
@@ -220,14 +240,7 @@ function generateNativeMVTQuery(
                 false  -- Don't clip geometry
             )${propertySelection ? ',\n            ' + propertySelection : ''}
         } AS feature
-        FROM ${fullTableName}
-        WHERE "${escapedGeomColumn}" IS NOT NULL
-            AND ST_Intersects(
-                -- Transform to Web Mercator for intersection test
-                ST_Transform("${escapedGeomColumn}", 'EPSG:4326', 'EPSG:3857', true),
-                ST_TileEnvelope(${z}, ${x}, ${y})
-            )
-        LIMIT 50000  -- Prevent excessive features per tile
+        FROM dumped
     )
     SELECT ST_AsMVT(
         feature,       -- Feature STRUCT

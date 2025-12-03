@@ -265,13 +265,20 @@ function generateTileQuery(
           ST_Transform("${escapedGeomColumn}", 'EPSG:4326', 'EPSG:3857', true),
           ST_TileEnvelope(${z}, ${x}, ${y})
         )
+      ),
+      dumped AS (
+        -- Decompose MultiGeometry and GeometryCollection into individual geometries
+        SELECT
+          UNNEST(ST_Dump(geom)).geom AS geom
+          ${escapedColList}
+        FROM filtered
       )
       SELECT
         ST_AsGeoJSON(
           ST_SimplifyPreserveTopology(geom, ${simplify})
         ) AS geojson
         ${columnSelection}
-      FROM filtered
+      FROM dumped
     `;
   } else {
     // Without simplification
@@ -285,11 +292,18 @@ function generateTileQuery(
           ST_Transform("${escapedGeomColumn}", 'EPSG:4326', 'EPSG:3857', true),
           ST_TileEnvelope(${z}, ${x}, ${y})
         )
+      ),
+      dumped AS (
+        -- Decompose MultiGeometry and GeometryCollection into individual geometries
+        SELECT
+          UNNEST(ST_Dump(geom)).geom AS geom
+          ${escapedColList}
+        FROM filtered
       )
       SELECT
         ST_AsGeoJSON(geom) AS geojson
         ${columnSelection}
-      FROM filtered
+      FROM dumped
     `;
   }
 
